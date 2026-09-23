@@ -228,9 +228,35 @@ function githubBackend(cfg) {
       if (!repo) throw httpError(404);
       const tree = repo.object;
       if (!tree || !tree.entries) return [];
-      return tree.entries
+      const files = tree.entries
         .filter((e) => e.type === 'blob' && /\.md$/i.test(e.name) && e.object && !e.object.isTruncated && typeof e.object.text === 'string')
         .map((e) => ({ path: DIR + '/' + e.name, sha: e.object.oid, text: e.object.text }));
+      try { await this.dates(files); } catch (e) { /* dates only affect the order; the list still works without them */ }
+      return files;
+    },
+    // When each file last changed, from git history, so the list can show newest first on every device.
+    async dates(files) {
+      for (let i = 0; i < files.length; i += 100) {
+        const chunk = files.slice(i, i + 100);
+        const fields = chunk.map((f, k) => 'f' + k + ':history(first:1,path:' + JSON.stringify(f.path) + '){nodes{committedDate}}').join(' ');
+        const res = await fetch(base + '/graphql', {
+          method: 'POST',
+          cache: 'no-store',
+          headers: { Authorization: 'Bearer ' + cfg.token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: 'query($o:String!,$n:String!){repository(owner:$o,name:$n){object(expression:"HEAD"){... on Commit{' + fields + '}}}}',
+            variables: { o: cfg.owner, n: cfg.repo }
+          })
+        });
+        if (!res.ok) throw httpError(res.status);
+        const data = await res.json();
+        const c = data && data.data && data.data.repository && data.data.repository.object;
+        if (!c) return;
+        chunk.forEach((f, k) => {
+          const h = c['f' + k], n = h && h.nodes && h.nodes[0];
+          if (n) f.date = Date.parse(n.committedDate) || 0;
+        });
+      }
     },
     async write(path, text, message, sha) {
       const body = { message, content: b64(text) };
@@ -290,7 +316,7 @@ function demoBackend() {
     { days: 14, message: 'Add Meeting notes to actions', body: 'Turn these notes into three sections: decisions, action items (owner and date), and open questions. If an owner is missing, flag it.\n\n{{notes}}' }
   ]);
   return {
-    async list() { return Object.keys(files).map((p) => ({ path: p, sha: files[p].sha, text: files[p].versions[0].text })); },
+    async list() { return Object.keys(files).map((p) => ({ path: p, sha: files[p].sha, text: files[p].versions[0].text, date: files[p].versions[0].date })); },
     async write(path, text, message, oldSha) {
       const f = files[path];
       if (f && oldSha !== f.sha) throw httpError(409);
@@ -322,7 +348,10 @@ function backend() {
 }
 function byPath(p) { for (let i = 0; i < state.prompts.length; i++) if (state.prompts[i].path === p) return state.prompts[i]; return null; }
 function fromFiles(files) {
-  return files.map((f) => { const p = parseFile(f.path, f.text); p.sha = f.sha; return p; });
+  // If the dates couldn't be fetched this time, keep the ones we already knew.
+  const known = {};
+  state.prompts.forEach((p) => { if (p.date) known[p.path] = p.date; });
+  return files.map((f) => { const p = parseFile(f.path, f.text); p.sha = f.sha; p.date = f.date || known[f.path] || 0; return p; });
 }
 function saveCache() {
   if (state.cfg && !state.cfg.demo) lsSet(LS_CACHE, { repo: state.cfg.owner + '/' + state.cfg.repo, prompts: state.prompts });
@@ -389,8 +418,9 @@ function tagbarHTML() {
 function resultsHTML() {
   const hasQuery = state.query.trim() || state.tags.length;
   const rows = state.prompts.map((p) => ({ p, s: score(p) })).filter((r) => r.s > 0);
+  // Search results by best match; otherwise newest first (last added or edited).
   if (state.query.trim()) rows.sort((a, b) => b.s - a.s);
-  else rows.sort((a, b) => a.p.title.localeCompare(b.p.title, undefined, { sensitivity: 'base' }));
+  else rows.sort((a, b) => (b.p.date || 0) - (a.p.date || 0) || a.p.title.localeCompare(b.p.title, undefined, { sensitivity: 'base' }));
   if (!rows.length) {
     if (hasQuery) return '<li class="empty">Nothing matches that.<br><button class="txt" data-act="clear">Clear search</button></li>';
     if (state.status === 'loading' && !state.prompts.length) return '<li class="empty">Loading your prompts…</li>';
@@ -402,7 +432,7 @@ function resultsHTML() {
       '<button class="open" data-act="open" data-path="' + esc(p.path) + '">' +
         '<span class="rtitle">' + esc(p.title) + '</span>' +
         '<span class="snip">' + renderBody(p.body, null, true) + '</span>' +
-        (p.tags.length ? '<span class="rmeta">' + p.tags.map((t) => '<span>#' + esc(t) + '</span>').join('') + '</span>' : '') +
+        (p.tags.length || p.date ? '<span class="rmeta">' + p.tags.map((t) => '<span>#' + esc(t) + '</span>').join('') + (p.date ? '<span class="when">' + esc(ago(p.date)) + '</span>' : '') + '</span>' : '') +
       '</button>' +
       '<button class="cp" data-act="quick" data-path="' + esc(p.path) + '" aria-label="' + (hasVars ? 'Fill in and copy ' : 'Copy ') + esc(p.title) + '">' + (hasVars ? ICON_FILL : ICON_COPY) + '</button>' +
     '</li>';
@@ -625,7 +655,7 @@ async function saveDraft(opts) {
   setBusy(true);
   try {
     const r = await backend().write(np.path, serialize(np), message, d.path ? d.sha : null);
-    np.sha = r.sha;
+    np.sha = r.sha; np.date = Date.now();
     const cur = byPath(np.path);
     if (cur) state.prompts[state.prompts.indexOf(cur)] = np; else state.prompts.push(np);
     saveCache(); dropDraft();
@@ -705,7 +735,7 @@ async function restoreVersion(i) {
   try {
     const np = { path: p.path, title: p.title, tags: p.tags, extras: p.extras, body: v.body };
     const r = await backend().write(p.path, serialize(np), 'Restore v' + n, p.sha);
-    np.sha = r.sha;
+    np.sha = r.sha; np.date = Date.now();
     state.prompts[state.prompts.indexOf(p)] = np;
     saveCache();
     state.busy = false;
