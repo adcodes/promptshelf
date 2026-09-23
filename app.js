@@ -338,7 +338,7 @@ const state = {
   values: lsGet(LS_VALUES) || {},
   view: 'list', path: null, query: '', tags: [],
   draft: null, armed: null, busy: false, hist: null,
-  conflict: null, restored: 0,
+  conflict: null, restored: 0, updateReady: false,
   status: 'loading', setupError: '', lastRefresh: 0
 };
 let demo = null;
@@ -384,6 +384,35 @@ function setStatus(s) {
   state.status = s;
   const n = el('syncline');
   if (n) { n.setAttribute('data-s', s); el('synctext').textContent = statusText(); }
+}
+
+/* ---------- app updates ---------- */
+// A home-screen app on iPhone resumes with the code it loaded earlier, so it can miss updates for days.
+// Each time the app comes back into view, ask the site whether the app files changed since this copy loaded.
+let appStamp = null, checkingUpdate = false;
+async function fileStamp() {
+  const parts = await Promise.all(['app.js', 'style.css', 'index.html'].map(async (f) => {
+    const r = await fetch(f, { method: 'HEAD', cache: 'no-store' });
+    if (!r.ok) throw new Error('stamp');
+    return r.headers.get('etag') || r.headers.get('last-modified') || '';
+  }));
+  return parts.every(Boolean) ? parts.join('|') : null;
+}
+async function checkForUpdate() {
+  if (PREVIEW || checkingUpdate || state.updateReady || !/^https?:$/.test(location.protocol)) return;
+  checkingUpdate = true;
+  try {
+    const s = await fileStamp();
+    if (s && !appStamp) appStamp = s;
+    else if (s && s !== appStamp) {
+      state.updateReady = true;
+      const b = el('updatebar'); if (b) b.innerHTML = updateBarHTML();
+    }
+  } catch (e) { /* offline or blocked: try again next time */ }
+  checkingUpdate = false;
+}
+function updateBarHTML() {
+  return state.updateReady ? '<button class="update" data-act="reload">A new version of the app is available. <strong>Tap to reload</strong></button>' : '';
 }
 
 /* ---------- search ---------- */
@@ -439,7 +468,8 @@ function resultsHTML() {
   }).join('');
 }
 function listView() {
-  return '<header class="head"><h1>Prompts</h1><p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></header>' +
+  return '<div id="updatebar">' + updateBarHTML() + '</div>' +
+    '<header class="head"><h1>Prompts</h1><p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></header>' +
     '<div class="sync" id="syncline" data-s="' + state.status + '"><span id="synctext">' + esc(statusText()) + '</span>' +
       (PREVIEW ? '' : '<button class="txt" data-act="refresh">Refresh</button>') + '</div>' +
     '<div class="search"><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search titles, prompts and tags" aria-label="Search prompts" value="' + esc(state.query) + '"></div>' +
@@ -795,6 +825,7 @@ document.addEventListener('click', (e) => {
     case 'keeptheirs': resolveConflict(false); break;
     case 'history': openHistory(); break;
     case 'refresh': refresh(); break;
+    case 'reload': location.reload(); break;
     case 'settings': state.setupError = ''; go('setup'); break;
     case 'cancelsetup': go('list'); break;
     case 'connect': connect(); break;
@@ -883,6 +914,7 @@ document.addEventListener('keydown', (e) => {
   else if (t.id === 's-token' && e.key === 'Enter') connect();
 });
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkForUpdate();
   if (document.visibilityState === 'visible' && state.view === 'list' && state.cfg && !state.cfg.demo && !typing() && Date.now() - state.lastRefresh > 15000) refresh();
 });
 
@@ -890,6 +922,7 @@ document.addEventListener('visibilitychange', () => {
 if (!PREVIEW && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+checkForUpdate(); // remembers which version this copy is
 if (!state.cfg) {
   state.view = 'setup';
   render(false);
