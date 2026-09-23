@@ -38,10 +38,14 @@ button{cursor:pointer}
 .update{display:block;width:100%;margin:14px 0 0;padding:12px 14px;border:0;border-radius:12px;background:var(--accent);color:var(--on-accent);font-size:15px;text-align:left}
 
 /* list */
-.head{padding:28px 0 12px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.head h1{margin:0;font-size:36px;line-height:1;font-weight:700;letter-spacing:-.025em}
-.count{margin:6px 0 0;color:var(--muted);font-size:15px}
-.gear{flex:none;width:46px;height:46px;margin:-2px -8px 0 0;border:0;border-radius:12px;background:none;color:var(--muted);display:grid;place-items:center}
+.head{padding:24px 0 12px}
+/* Title and gear share a row centred by flexbox. text-box trims the heading to its capital letters,
+   so the gear centres on the visible word rather than on the line's empty space. */
+.titlerow{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.head h1{margin:0;font-size:36px;line-height:1;font-weight:700;letter-spacing:-.025em;text-box:trim-both cap alphabetic}
+.count{margin:0;color:var(--muted);font-size:15px}
+/* Same size as the copy buttons (.cp), so the right-hand icons form one column. */
+.gear{flex:none;width:46px;height:46px;border:0;border-radius:12px;background:none;color:var(--muted);display:grid;place-items:center}
 .gear:active{background:var(--line)}
 .sync{display:flex;align-items:center;gap:8px;margin:0 0 14px;font-size:14px;color:var(--muted)}
 .sync::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}

@@ -478,8 +478,9 @@ function resultsHTML() {
 }
 function listView() {
   return '<div id="updatebar">' + updateBarHTML() + '</div>' +
-    '<header class="head"><div><h1>Prompts</h1><p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></div>' +
-      (PREVIEW ? '' : '<button class="gear" data-act="settings" aria-label="Settings and About">' + ICON_GEAR + '</button>') + '</header>' +
+    '<header class="head"><div class="titlerow"><h1>Prompts</h1>' +
+      (PREVIEW ? '' : '<button class="gear" data-act="settings" aria-label="Settings and About">' + ICON_GEAR + '</button>') + '</div>' +
+      '<p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></header>' +
     '<div class="sync" id="syncline" data-s="' + state.status + '"><span id="synctext">' + esc(statusText()) + '</span>' +
       (PREVIEW ? '' : '<button class="txt" data-act="refresh">Refresh</button>') + '</div>' +
     '<div class="search"><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search titles, prompts and tags" aria-label="Search prompts" value="' + esc(state.query) + '"></div>' +
