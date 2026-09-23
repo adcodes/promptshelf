@@ -24,8 +24,17 @@ const HIST_LIMIT = 30;
 const VAR_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
 const PREVIEW = !!window.PROMPTSHELF_PREVIEW;
 
+// Bump APP_VERSION (the publish date) and add a line to CHANGES every time the app is published.
+const APP_VERSION = '2026.09.24';
+const CHANGES = [
+  ['2026.09.24', 'New About page. Settings moved to the gear icon at the top of the list.'],
+  ['2026.09.23', 'Newest prompts first. "Update available" bar. Unsaved edits are kept if the app closes. Editing on two devices now lets you choose which version to keep. "Clear answers" button.'],
+  ['2026.09.22', 'First version.']
+];
+
 const ICON_COPY = '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/></svg>';
 const ICON_FILL = '<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9M18 7h2M4 17h2M11 17h9"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="8.5" cy="17" r="2.2"/></svg>';
+const ICON_GEAR = '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
 const ICON_PLUS = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 
 /* ---------- small helpers ---------- */
@@ -469,13 +478,13 @@ function resultsHTML() {
 }
 function listView() {
   return '<div id="updatebar">' + updateBarHTML() + '</div>' +
-    '<header class="head"><h1>Prompts</h1><p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></header>' +
+    '<header class="head"><div><h1>Prompts</h1><p class="count" id="count">' + plural(state.prompts.length, 'prompt') + '</p></div>' +
+      (PREVIEW ? '' : '<button class="gear" data-act="settings" aria-label="Settings and About">' + ICON_GEAR + '</button>') + '</header>' +
     '<div class="sync" id="syncline" data-s="' + state.status + '"><span id="synctext">' + esc(statusText()) + '</span>' +
       (PREVIEW ? '' : '<button class="txt" data-act="refresh">Refresh</button>') + '</div>' +
     '<div class="search"><input id="q" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Search titles, prompts and tags" aria-label="Search prompts" value="' + esc(state.query) + '"></div>' +
     '<div class="tagbar" id="tagbar">' + tagbarHTML() + '</div>' +
     '<ul class="list" id="results">' + resultsHTML() + '</ul>' +
-    (PREVIEW ? '' : '<div class="foot"><button class="txt plain" data-act="settings">Settings</button></div>') +
     '<button class="fab" data-act="new">' + ICON_PLUS + 'New prompt</button>';
 }
 function refreshList() {
@@ -490,24 +499,66 @@ function iosNeedsHomeScreen() {
   const standalone = navigator.standalone === true || (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
   return ios && !standalone;
 }
+const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
 function setupView() {
-  const c = state.cfg && !state.cfg.demo ? state.cfg : { owner: '', repo: '' };
-  const back = state.cfg ? bar('<button class="txt" data-act="cancelsetup">Cancel</button>', '') : '<div class="spacer"></div>';
-  return back +
-    '<h2 class="pt">Connect GitHub</h2><div class="spacer"></div>' +
-    (iosNeedsHomeScreen() ? '<p class="notice"><strong>On iPhone, install first.</strong> Tap Share, then "Add to Home Screen", and open the app from its icon before connecting. Safari and the home-screen app keep separate storage, and Safari can clear it after a week of not being used.</p>' : '') +
-    '<ol class="steps">' +
+  const connected = !!(state.cfg && !state.cfg.demo);
+  const c = connected ? state.cfg : { owner: '', repo: '' };
+  const back = state.cfg ? bar('<button class="txt" data-act="cancelsetup">‹ Prompts</button>', '') : '<div class="spacer"></div>';
+  const steps = '<ol class="steps">' +
       '<li>On GitHub, create a <strong>private</strong> repository for your prompts (for example <code>my-prompts</code>) and tick "Add a README".</li>' +
-      '<li>Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">fine-grained token</a>. Under "Repository access" choose "Only select repositories" and pick that repo. Under "Permissions", set <strong>Contents</strong> to "Read and write".</li>' +
+      '<li>Create a <a href="' + TOKEN_URL + '" target="_blank" rel="noopener noreferrer">fine-grained token</a>. Under "Repository access" choose "Only select repositories" and pick that repo. Under "Permissions", set <strong>Contents</strong> to "Read and write".</li>' +
       '<li>Paste the details below. The token stays on this device only.</li>' +
-    '</ol>' +
+    '</ol>';
+  return back +
+    '<h2 class="pt">' + (state.cfg ? 'Settings' : 'Connect GitHub') + '</h2><div class="spacer"></div>' +
+    (state.cfg ? '<button class="linkrow" data-act="about"><span>About Promptshelf</span><span>How it works ›</span></button><h3 class="sec">GitHub connection</h3>' : '') +
+    (iosNeedsHomeScreen() ? '<p class="notice"><strong>On iPhone, install first.</strong> Tap Share, then "Add to Home Screen", and open the app from its icon before connecting. Safari and the home-screen app keep separate storage, and Safari can clear it after a week of not being used.</p>' : '') +
+    (connected
+      ? '<p class="hint flat">Connected to <strong>' + esc(c.owner + '/' + c.repo) + '</strong>. If your key has expired, <a href="' + TOKEN_URL + '" target="_blank" rel="noopener noreferrer">create a new one</a> with the same settings and paste it below.</p>'
+      : steps) +
     '<label class="field"><span>GitHub username</span><input id="s-owner" autocomplete="off" autocapitalize="off" spellcheck="false" value="' + esc(c.owner) + '"></label>' +
     '<label class="field"><span>Repository name</span><input id="s-repo" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="my-prompts" value="' + esc(c.repo) + '"></label>' +
     '<label class="field"><span>Token</span><input id="s-token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="' + (c.token ? 'Leave blank to keep the current token' : 'github_pat_…') + '"></label>' +
     '<p class="err" id="s-err">' + esc(state.setupError) + '</p>' +
     '<button class="primary" data-act="connect" id="s-btn">Connect</button>' +
-    (state.cfg && !state.cfg.demo ? '<div class="foot"><button class="danger" data-act="signout">Sign out and clear this device</button></div>' : '') +
-    (state.cfg ? '' : '<p class="or">or</p><button class="secondary" data-act="demo">Try it with sample prompts</button>');
+    (connected ? '<div class="foot"><button class="danger" data-act="signout">Sign out and clear this device</button></div>' : '') +
+    (state.cfg ? '' : '<p class="or">or</p><button class="secondary" data-act="demo">Try it with sample prompts</button>' +
+      '<div class="foot"><button class="txt plain" data-act="about">About Promptshelf</button></div>') +
+    '<p class="ver">Version ' + APP_VERSION + '</p>';
+}
+
+function aboutView() {
+  const connected = state.cfg && !state.cfg.demo;
+  const repoLink = connected
+    ? '<a href="https://github.com/' + encodeURIComponent(state.cfg.owner) + '/' + encodeURIComponent(state.cfg.repo) + '" target="_blank" rel="noopener noreferrer">' + esc(state.cfg.owner + '/' + state.cfg.repo) + '</a>'
+    : 'your private repository';
+  const icon = (svg) => '<span class="ico">' + svg + '</span>';
+  return bar('<button class="txt" data-act="settings">‹ Settings</button>', '') +
+    '<h2 class="pt">About Promptshelf</h2>' +
+    '<div class="about">' +
+      '<p>Your personal prompt library. Every prompt is a plain text file in ' + repoLink + ' on GitHub, which only you can see. This app is a friendly way to find, fill in and improve them on your phone or computer. There is no Promptshelf account and no Promptshelf server.</p>' +
+
+      '<h3 class="sec">Using a prompt</h3>' +
+      '<ul>' +
+        '<li>' + icon(ICON_COPY) + '<span><strong>Copy.</strong> The prompt has no blanks, so one tap copies it.</span></li>' +
+        '<li>' + icon(ICON_FILL) + '<span><strong>Fill in.</strong> The prompt has blanks. Tap to fill them in, then Copy.</span></li>' +
+      '</ul>' +
+      '<p>To make a blank, wrap a word in double braces, like <code>{{topic}}</code>. Use letters, numbers or _ only. What you type into blanks is remembered on this device until you tap <strong>Clear answers</strong>.</p>' +
+
+      '<h3 class="sec">Saving and history</h3>' +
+      '<p>Every save is kept as a new version. The "What changed, and why?" note is shown in <strong>History</strong>, where you can see what changed and restore an older version.</p>' +
+      '<p>Unsaved edits are kept on the device, so they come back if the app closes. If you edit a prompt that was changed on another device in the meantime, you can choose which version to keep, and the other one stays in History.</p>' +
+      '<p>The list shows the prompts you added or edited most recently first. Search shows the best match first.</p>' +
+
+      '<h3 class="sec">Your devices</h3>' +
+      '<p>Each device connects with its own GitHub key (token). Keys expire. When one does, the app stops syncing on that device: <a href="' + TOKEN_URL + '" target="_blank" rel="noopener noreferrer">create a new key</a> and paste it in Settings. <strong>Sign out</strong> removes the key, your saved answers and any unsaved edit from this device. Your prompts on GitHub are not affected.</p>' +
+
+      '<h3 class="sec">Updates</h3>' +
+      '<p>When a new version of the app is published, a blue bar appears at the top of the list. Tap it to reload.</p>' +
+
+      '<h3 class="sec">Version ' + APP_VERSION + '</h3>' +
+      '<ul class="changes">' + CHANGES.map((c) => '<li><strong>' + esc(c[0]) + '</strong><span>' + esc(c[1]) + '</span></li>').join('') + '</ul>' +
+    '</div>';
 }
 
 function detailView() {
@@ -601,7 +652,7 @@ function historyView() {
 /* ---------- render and navigation ---------- */
 function render(scrollTop) {
   const app = el('app'), v = state.view;
-  app.innerHTML = v === 'list' ? listView() : v === 'detail' ? detailView() : v === 'edit' ? editorView() : v === 'history' ? historyView() : setupView();
+  app.innerHTML = v === 'list' ? listView() : v === 'detail' ? detailView() : v === 'edit' ? editorView() : v === 'history' ? historyView() : v === 'about' ? aboutView() : setupView();
   Array.prototype.forEach.call(app.querySelectorAll('textarea[data-var]'), autosize);
   if (scrollTop) window.scrollTo(0, 0);
 }
@@ -828,6 +879,7 @@ document.addEventListener('click', (e) => {
     case 'reload': location.reload(); break;
     case 'settings': state.setupError = ''; go('setup'); break;
     case 'cancelsetup': go('list'); break;
+    case 'about': go('about'); break;
     case 'connect': connect(); break;
     case 'demo': state.cfg = { demo: true }; demo = null; state.prompts = []; state.status = 'ok'; go('list'); refresh(); break;
     case 'signout':
