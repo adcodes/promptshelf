@@ -18,6 +18,7 @@
 const LS_CFG = 'promptshelf:gh';
 const LS_CACHE = 'promptshelf:cache';
 const LS_VALUES = 'promptshelf:values';
+const LS_DRAFT = 'promptshelf:draft';
 const DIR = 'prompts';
 const HIST_LIMIT = 30;
 const VAR_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g;
@@ -311,6 +312,7 @@ const state = {
   values: lsGet(LS_VALUES) || {},
   view: 'list', path: null, query: '', tags: [],
   draft: null, armed: null, busy: false, hist: null,
+  conflict: null, restored: 0,
   status: 'loading', setupError: '', lastRefresh: 0
 };
 let demo = null;
@@ -326,6 +328,10 @@ function saveCache() {
   if (state.cfg && !state.cfg.demo) lsSet(LS_CACHE, { repo: state.cfg.owner + '/' + state.cfg.repo, prompts: state.prompts });
 }
 function saveValues() { lsSet(LS_VALUES, state.values); }
+// The draft being edited is kept on the device as you type, so it survives the app being closed.
+function repoKey() { return state.cfg ? (state.cfg.demo ? 'demo' : state.cfg.owner + '/' + state.cfg.repo) : ''; }
+function keepDraft() { if (!PREVIEW && state.draft) lsSet(LS_DRAFT, { repo: repoKey(), at: Date.now(), draft: state.draft }); }
+function dropDraft() { lsDel(LS_DRAFT); state.restored = 0; state.conflict = null; }
 function errMsg(e, what) {
   if (e.kind === 'network') return "Can't reach GitHub. Check your connection.";
   if (e.status === 401) return 'GitHub rejected the token. Check Settings.';
@@ -453,6 +459,7 @@ function detailView() {
     '<h2 class="pt">' + esc(p.title) + '</h2>' +
     '<div class="meta">' + (p.tags.length ? p.tags.map((t) => '<span>#' + esc(t) + '</span>').join('') : '<span>No tags</span>') + '</div>' +
     fields +
+    (names.length ? '<div class="tools"><button class="ghost" data-act="clearvals">Clear answers</button></div>' : '') +
     '<div class="preview" id="preview">' + renderBody(p.body, vals) + '</div>' +
     '<button class="linkrow" data-act="history"><span>History</span><span>Versions and changes ›</span></button>' +
     '<div class="dock"><button data-act="copy">Copy prompt</button></div>';
@@ -470,10 +477,24 @@ function tagEditHTML() {
   return '<div class="tagedit">' + chips + '<input id="tagin" class="tagin" enterkeyhint="done" autocomplete="off" autocapitalize="off" placeholder="Add a tag" aria-label="Add a tag"></div>' +
     (sug ? '<div class="tagedit gap">' + sug + '</div>' : '');
 }
+function editorNotice() {
+  const c = state.conflict;
+  if (c) {
+    return '<div class="notice conflict"><strong>' + (c.theirs ? 'This prompt was changed on another device' : 'This prompt was deleted on another device') + '</strong> since you started editing.' +
+      (c.theirs ? '<span class="clabel">Their version</span><div class="diff">' + renderBody(c.theirs.body, null) + '</div>' : '') +
+      '<div class="cact"><button class="ghost" data-act="keepmine">Save mine anyway</button>' +
+      '<button class="ghost" data-act="keeptheirs">' + (c.theirs ? 'Use theirs' : 'Discard mine') + '</button></div>' +
+      (c.theirs ? '<p class="hint">Either way, nothing is lost: the other version stays in History.</p>' : '') +
+    '</div>';
+  }
+  if (state.restored) return '<p class="notice">Restored your unsaved changes from ' + esc(ago(state.restored)) + '. Save them, or tap Cancel to throw them away.</p>';
+  return '';
+}
 function editorView() {
   const d = state.draft, isNew = !d.path;
   return bar('<button class="txt" data-act="cancel">Cancel</button>', '<button class="txt strong" data-act="save" id="savebtn">Save</button>') +
     '<h2 class="pt">' + (isNew ? 'New prompt' : 'Edit prompt') + '</h2><div class="spacer"></div>' +
+    editorNotice() +
     '<label class="field"><span>Title</span><input id="f-title" autocomplete="off" placeholder="What is this prompt for?" value="' + esc(d.title) + '"></label>' +
     '<label class="field"><span>Prompt</span><textarea id="f-body" spellcheck="false" placeholder="Write the prompt. Use {{name}} for anything that changes each time.">' + esc(d.body) + '</textarea></label>' +
     '<div class="tools"><button class="ghost" data-act="insvar">Add variable</button><div id="varchips">' + varChips(d.body) + '</div></div>' +
@@ -551,7 +572,9 @@ async function refresh() {
 /* ---------- actions ---------- */
 function openEditor(path) {
   const p = path ? byPath(path) : null;
-  state.draft = p ? { path: p.path, title: p.title, body: p.body, tags: p.tags.slice(), note: '' } : { path: null, title: '', body: '', tags: [], note: '' };
+  // sha is the version this edit started from; saving against it is how a change made on another device is noticed.
+  state.draft = p ? { path: p.path, sha: p.sha, title: p.title, body: p.body, tags: p.tags.slice(), note: '' } : { path: null, sha: null, title: '', body: '', tags: [], note: '' };
+  state.restored = 0; state.conflict = null;
   go('edit');
   if (!p) { const t = el('f-title'); if (t) t.focus(); }
 }
@@ -564,7 +587,7 @@ function refreshTags() {
 }
 function addTag(raw, silent) {
   const t = normTag(raw), d = state.draft;
-  if (t && d.tags.indexOf(t) < 0) d.tags.push(t);
+  if (t && d.tags.indexOf(t) < 0) { d.tags.push(t); keepDraft(); }
   const old = el('tagin'); if (old) old.value = '';
   const inp = refreshTags();
   if (!silent) inp.focus();
@@ -582,31 +605,71 @@ function setBusy(b, label) {
   const s = el('savebtn'); if (s) { s.disabled = b; s.textContent = b ? 'Saving…' : 'Save'; }
   const c = el('copybtn'); if (c) c.disabled = b;
 }
-async function saveDraft() {
+async function saveDraft(opts) {
+  opts = opts || {};
   if (state.busy) return;
+  if (state.conflict) { window.scrollTo(0, 0); toast('Choose which version to keep first'); return; }
   const d = state.draft, pend = el('tagin');
   if (pend && pend.value.trim()) addTag(pend.value, true);
   const body = d.body.replace(/^\s+|\s+$/g, '');
   if (!body) { toast('Add the prompt text first'); return; }
   const title = d.title.trim() || body.replace(/\s+/g, ' ').slice(0, 42);
   const old = d.path ? byPath(d.path) : null;
-  if (old && old.title === title && old.body === body && old.tags.join('\n') === d.tags.join('\n')) {
-    go('detail', { path: old.path }); toast('No changes'); return;
+  if (old && old.sha === d.sha && old.title === title && old.body === body && old.tags.join('\n') === d.tags.join('\n')) {
+    dropDraft(); go('detail', { path: old.path }); toast('No changes'); return;
   }
-  const np = { path: old ? old.path : newPath(title), title, tags: d.tags.slice(), extras: old ? old.extras : [], body };
-  const message = (d.note || '').trim() || (old ? 'Update ' + title : 'Add ' + title);
+  // Save against the version this edit started from (d.sha), not whatever the list holds now,
+  // so GitHub refuses the write if another device saved in between.
+  const np = { path: d.path || newPath(title), title, tags: d.tags.slice(), extras: old ? old.extras : [], body };
+  const message = (d.note || '').trim() || (d.path ? 'Update ' + title : 'Add ' + title);
   setBusy(true);
   try {
-    const r = await backend().write(np.path, serialize(np), message, old ? old.sha : null);
+    const r = await backend().write(np.path, serialize(np), message, d.path ? d.sha : null);
     np.sha = r.sha;
-    if (old) state.prompts[state.prompts.indexOf(old)] = np; else state.prompts.push(np);
-    saveCache();
+    const cur = byPath(np.path);
+    if (cur) state.prompts[state.prompts.indexOf(cur)] = np; else state.prompts.push(np);
+    saveCache(); dropDraft();
     state.busy = false;
     go('detail', { path: np.path });
-    toast('Saved');
+    toast(opts.done || 'Saved');
   } catch (e) {
     setBusy(false);
-    toast(errMsg(e, 'save'));
+    const clash = e.kind === 'http' && (e.status === 409 || e.status === 422 || e.status === 404);
+    if (clash && d.path) await checkConflict(e);
+    else if (clash && !opts.retried) {
+      // A new prompt whose file name was just taken on another device: reload and pick a free name.
+      try { state.prompts = fromFiles(await backend().list()); saveCache(); } catch (e2) { toast(errMsg(e, 'save')); return; }
+      saveDraft({ retried: true });
+    } else toast(errMsg(e, 'save'));
+  }
+}
+// A save was refused. Reload the prompts to see whether another device changed or deleted this one.
+async function checkConflict(e) {
+  const d = state.draft;
+  setBusy(true);
+  try {
+    state.prompts = fromFiles(await backend().list());
+    saveCache();
+  } catch (e2) { setBusy(false); toast(errMsg(e2, 'save')); return; }
+  setBusy(false);
+  const cur = byPath(d.path);
+  if (cur && cur.sha === d.sha) { toast(errMsg(e, 'save')); return; }
+  state.conflict = { theirs: cur ? { sha: cur.sha, body: cur.body } : null };
+  render(true);
+}
+function resolveConflict(keepMine) {
+  const d = state.draft, c = state.conflict;
+  if (!c) return;
+  state.conflict = null;
+  if (keepMine) {
+    // Build on top of their version, so theirs stays in History as the version before mine.
+    d.sha = c.theirs ? c.theirs.sha : null;
+    keepDraft();
+    saveDraft({ done: c.theirs ? 'Saved. Their version is in History.' : 'Saved' });
+  } else {
+    dropDraft();
+    if (c.theirs) go('detail', { path: d.path }); else go('list', { path: null });
+    toast(c.theirs ? 'Kept their version' : 'Discarded your changes');
   }
 }
 async function deletePrompt() {
@@ -616,7 +679,7 @@ async function deletePrompt() {
   try {
     await backend().remove(p.path, p.sha, 'Delete ' + p.title);
     state.prompts = state.prompts.filter((x) => x !== p);
-    delete state.values[p.path]; saveValues(); saveCache();
+    delete state.values[p.path]; saveValues(); saveCache(); dropDraft();
     state.busy = false;
     go('list', { path: null });
     toast('Deleted');
@@ -696,8 +759,10 @@ document.addEventListener('click', (e) => {
     case 'back': go('list'); break;
     case 'tolist': go('detail'); break;
     case 'edit': openEditor(state.path); break;
-    case 'cancel': go(state.draft && state.draft.path ? 'detail' : 'list'); break;
+    case 'cancel': dropDraft(); go(state.draft && state.draft.path && byPath(state.draft.path) ? 'detail' : 'list', { path: state.draft && state.draft.path }); break;
     case 'save': saveDraft(); break;
+    case 'keepmine': resolveConflict(true); break;
+    case 'keeptheirs': resolveConflict(false); break;
     case 'history': openHistory(); break;
     case 'refresh': refresh(); break;
     case 'settings': state.setupError = ''; go('setup'); break;
@@ -706,7 +771,7 @@ document.addEventListener('click', (e) => {
     case 'demo': state.cfg = { demo: true }; demo = null; state.prompts = []; state.status = 'ok'; go('list'); refresh(); break;
     case 'signout':
       if (state.armed === 'signout') {
-        lsDel(LS_CFG); lsDel(LS_CACHE); lsDel(LS_VALUES);
+        lsDel(LS_CFG); lsDel(LS_CACHE); lsDel(LS_VALUES); dropDraft();
         state.cfg = null; state.prompts = []; state.values = {}; state.setupError = '';
         go('setup'); toast('Signed out. This device no longer has the token.');
       } else { state.armed = 'signout'; b.textContent = 'Tap again to sign out'; }
@@ -717,6 +782,10 @@ document.addEventListener('click', (e) => {
       refreshList(); break;
     }
     case 'clear': state.query = ''; state.tags = []; render(false); break;
+    case 'clearvals':
+      delete state.values[state.path]; saveValues();
+      render(false); toast('Cleared');
+      break;
     case 'quick':
       p = byPath(path);
       if (!p) break;
@@ -750,7 +819,7 @@ document.addEventListener('click', (e) => {
     }
     case 'rmtag': {
       const rm = state.draft.tags.indexOf(b.getAttribute('data-tag'));
-      if (rm > -1) state.draft.tags.splice(rm, 1);
+      if (rm > -1) { state.draft.tags.splice(rm, 1); keepDraft(); }
       refreshTags(); break;
     }
     case 'addsug': addTag(b.getAttribute('data-tag'), true); break;
@@ -772,9 +841,9 @@ document.addEventListener('input', (e) => {
     saveValues(); autosize(t);
     el('preview').innerHTML = renderBody(p.body, state.values[p.path]);
   }
-  else if (t.id === 'f-title') state.draft.title = t.value;
-  else if (t.id === 'f-body') { state.draft.body = t.value; el('varchips').innerHTML = varChips(t.value); }
-  else if (t.id === 'f-note') state.draft.note = t.value;
+  else if (t.id === 'f-title') { state.draft.title = t.value; keepDraft(); }
+  else if (t.id === 'f-body') { state.draft.body = t.value; el('varchips').innerHTML = varChips(t.value); keepDraft(); }
+  else if (t.id === 'f-note') { state.draft.note = t.value; keepDraft(); }
   else if (t.id === 'tagin' && /,$/.test(t.value)) addTag(t.value);
 });
 document.addEventListener('keydown', (e) => {
@@ -798,6 +867,11 @@ if (!state.cfg) {
   if (!state.cfg.demo) {
     const cache = lsGet(LS_CACHE);
     if (cache && cache.repo === state.cfg.owner + '/' + state.cfg.repo && Array.isArray(cache.prompts)) state.prompts = cache.prompts;
+  }
+  // Reopen an edit that never got saved, e.g. because the phone closed the app in the background.
+  const kept = PREVIEW ? null : lsGet(LS_DRAFT);
+  if (kept && kept.repo === repoKey() && kept.draft) {
+    state.draft = kept.draft; state.restored = kept.at || Date.now(); state.view = 'edit';
   }
   render(false);
   refresh();

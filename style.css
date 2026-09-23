@@ -100,6 +100,11 @@ mark.var{background:var(--mark);color:var(--on-mark);padding:0 3px;border-radius
 .hint{color:var(--muted);font-size:14px;margin:-8px 0 18px}
 .danger{margin-top:12px;background:none;border:1px solid var(--line);border-radius:12px;color:var(--danger);padding:12px 16px;font-size:16px}
 .notice{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:12px 14px;margin:0 0 20px;font-size:15px}
+.notice.conflict{border-color:var(--warn)}
+.notice .clabel{display:block;margin:12px 0 6px;color:var(--muted);font-size:14px}
+.notice .diff{max-height:220px;overflow:auto}
+.cact{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.notice .hint{margin:0}
 .err{color:var(--danger);font-size:15px;margin:-6px 0 16px}
 
 /* setup */
